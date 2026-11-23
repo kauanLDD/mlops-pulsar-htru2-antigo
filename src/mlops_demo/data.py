@@ -1,4 +1,4 @@
-"""Dados: criação da base, validação de esquema, geração de lotes e preparação.
+"""Dados do HTRU2: criação da base, validação de esquema, geração de lotes e preparação.
 
 Uso na linha de comando:
     python -m mlops_demo.data base      # cria base_treino.csv e base_holdout.csv (uma vez)
@@ -9,22 +9,26 @@ Uso na linha de comando:
 import sys
 
 import pandas as pd
-from sklearn.datasets import load_breast_cancer
 from sklearn.model_selection import train_test_split
 
 from mlops_demo import config
 
 SEMENTE_DADOS = 7  # divisão fixa da base: não mude, ou o campeão perde a referência
-N_TREINO_BASE = 300
-N_HOLDOUT_BASE = 100
+N_TREINO_BASE = 3000
+N_HOLDOUT_BASE = 1000
+
+# faixas válidas do domínio (HTRU2). Fora disso o dado veio de um pipeline de sinal quebrado.
+MEDIA_PERFIL_MAX = 255.0  # o perfil integrado é amostrado em 8 bits (0 a 255)
+CURTOSE_MIN = -3.5  # curtose em excesso não desce muito abaixo de -2; folga para ruído numérico
+COLUNAS_DESVIO = ["perfil_desvio", "dmsnr_desvio"]
+COLUNAS_MEDIA = ["perfil_media", "dmsnr_media"]
+COLUNAS_CURTOSE = ["perfil_curtose", "dmsnr_curtose"]
 
 
 def carregar_dataset_completo() -> pd.DataFrame:
-    """Breast Cancer Wisconsin completo (569 linhas), com a coluna target."""
-    bruto = load_breast_cancer(as_frame=True)
-    df = bruto.frame.copy()
-    df.columns = [*config.FEATURES, config.ALVO]
-    return df
+    """HTRU2 completo (17.898 candidatos), com a coluna pulsar (1 = pulsar, 0 = ruído)."""
+    df = pd.read_csv(config.DATASET_ORIGINAL)
+    return df[[*config.FEATURES, config.ALVO]]
 
 
 def dividir_dataset() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -54,15 +58,15 @@ def criar_base() -> None:
 
 
 def aplicar_drift(df: pd.DataFrame, fator: float) -> pd.DataFrame:
-    """Simula equipamento recalibrado: raio e perímetro x fator, área x fator ao quadrado."""
+    """Simula receptor recalibrado: o ganho muda, então média e desvio do sinal escalam pelo
+    fator. Curtose e assimetria não dependem da escala e ficam iguais."""
     saida = df.copy()
-    for coluna in config.COLUNAS_TAMANHO:
-        potencia = 2 if "area" in coluna else 1
-        saida[coluna] = saida[coluna] * (fator**potencia)
+    for coluna in config.COLUNAS_ESCALA:
+        saida[coluna] = saida[coluna] * fator
     return saida
 
 
-def gerar_lote(nome: str, n: int = 120, fator_drift: float = 1.0, semente: int = 1) -> str:
+def gerar_lote(nome: str, n: int = 600, fator_drift: float = 1.0, semente: int = 1) -> str:
     """Cria data/raw/lotes/<nome>.csv a partir da reserva, opcionalmente com drift."""
     _, _, reserva = dividir_dataset()
     lote = reserva.sample(n=min(n, len(reserva)), random_state=semente).reset_index(drop=True)
@@ -88,9 +92,23 @@ def validar_dataframe(df: pd.DataFrame) -> list[str]:
         problemas.append(f"{nulos} valores nulos")
     if not df[config.ALVO].isin([0, 1]).all():
         problemas.append("alvo com valores fora de {0, 1}")
-    negativos = [c for c in config.FEATURES if (df[c] < 0).any()]
-    if negativos:
-        problemas.append(f"valores negativos em {negativos[:3]}")
+    if not all(pd.api.types.is_numeric_dtype(df[c]) for c in config.FEATURES):
+        problemas.append("atributo com tipo não numérico")
+        return problemas
+    infinitos = [c for c in config.FEATURES if df[c].abs().eq(float("inf")).any()]
+    if infinitos:
+        problemas.append(f"valores infinitos em {infinitos}")
+    desvio_invalido = [c for c in COLUNAS_DESVIO if (df[c] <= 0).any()]
+    if desvio_invalido:
+        problemas.append(f"desvio padrão zero ou negativo em {desvio_invalido}")
+    media_negativa = [c for c in COLUNAS_MEDIA if (df[c] < 0).any()]
+    if media_negativa:
+        problemas.append(f"média negativa em {media_negativa}")
+    if (df["perfil_media"] > MEDIA_PERFIL_MAX).any():
+        problemas.append(f"perfil_media acima de {MEDIA_PERFIL_MAX:.0f} (fora da faixa de 8 bits)")
+    curtose_impossivel = [c for c in COLUNAS_CURTOSE if (df[c] < CURTOSE_MIN).any()]
+    if curtose_impossivel:
+        problemas.append(f"curtose impossível (< {CURTOSE_MIN}) em {curtose_impossivel}")
     return problemas
 
 
