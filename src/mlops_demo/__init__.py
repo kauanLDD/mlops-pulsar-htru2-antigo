@@ -1,3 +1,3 @@
-"""Projeto de demonstração de CI/CD/CT para ML."""
+"""Triagem de candidatos a pulsar (HTRU2) com CI/CD/CT."""
 
-__version__ = "0.1.0"
+__version__ = "1.0.0"
