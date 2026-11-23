@@ -5,6 +5,7 @@ import pytest
 from sklearn.pipeline import Pipeline
 
 from mlops_demo import config
+from mlops_demo.data import aplicar_drift
 from mlops_demo.evaluate import calcular_metricas
 from mlops_demo.features import construir_pipeline, separar_xy
 from mlops_demo.gate import decidir
@@ -12,9 +13,9 @@ from mlops_demo.gate import decidir
 pytestmark = pytest.mark.codigo
 
 
-def test_separar_xy_devolve_30_atributos_e_alvo(base_treino):
+def test_separar_xy_devolve_8_atributos_e_alvo(base_treino):
     X, y = separar_xy(base_treino)
-    assert X.shape == (len(base_treino), 30)
+    assert X.shape == (len(base_treino), 8)
     assert len(y) == len(base_treino)
 
 
@@ -25,7 +26,7 @@ def test_separar_xy_impoe_a_ordem_das_colunas(base_treino):
 
 
 def test_separar_xy_falha_quando_falta_coluna(base_treino):
-    sem_coluna = base_treino.drop(columns=["mean radius"])
+    sem_coluna = base_treino.drop(columns=["perfil_curtose"])
     with pytest.raises(ValueError, match="Colunas ausentes"):
         separar_xy(sem_coluna)
 
@@ -42,33 +43,57 @@ def test_pipeline_tem_padronizacao_e_classificador(params):
     assert [nome for nome, _ in pipeline.steps] == ["padronizar", "classificador"]
 
 
-def test_metricas_usam_a_classe_maligna_como_positiva():
-    # modelo que chuta tudo como maligno (0): recall 1.0 e precisão = proporção real de malignos
-    y_real = [0, 0, 1, 1]
-    metricas = calcular_metricas(y_real, [0, 0, 0, 0])
-    assert metricas["recall_maligno"] == 1.0
-    assert metricas["precisao_maligna"] == pytest.approx(0.5)
+def test_metricas_usam_pulsar_como_classe_positiva():
+    # modelo que chuta tudo como pulsar (1): recall 1.0 e precisão = proporção real de pulsares
+    y_real = [1, 1, 0, 0]
+    metricas = calcular_metricas(y_real, [1, 1, 1, 1])
+    assert metricas["recall_pulsar"] == 1.0
+    assert metricas["precisao_pulsar"] == pytest.approx(0.5)
+
+
+def test_chutar_tudo_ruido_tem_acuracia_alta_e_recall_zero(base_holdout):
+    """Novo: com 9% de pulsares a acurácia engana. Por isso o contrato usa recall e precisão."""
+    y = base_holdout[config.ALVO]
+    metricas = calcular_metricas(y, [0] * len(y))
+    assert metricas["acuracia"] > 0.85
+    assert metricas["recall_pulsar"] == 0.0
+
+
+def test_drift_so_muda_as_colunas_de_escala(base_treino):
+    """Novo: recalibrar o ganho mexe em média e desvio, nunca em curtose e assimetria."""
+    com_drift = aplicar_drift(base_treino, 0.75)
+    for coluna in config.FEATURES:
+        if coluna in config.COLUNAS_ESCALA:
+            assert (com_drift[coluna] == base_treino[coluna] * 0.75).all()
+        else:
+            pd.testing.assert_series_equal(com_drift[coluna], base_treino[coluna])
 
 
 # --- o próprio portão de qualidade precisa ser testado ---------------------------------------
 
 
 def _metricas(recall, precisao):
-    return {"recall_maligno": recall, "precisao_maligna": precisao, "n_amostras": 100}
+    return {"recall_pulsar": recall, "precisao_pulsar": precisao, "n_amostras": 100}
 
 
 def test_gate_aprova_candidato_melhor_e_dentro_dos_limiares():
-    assert decidir(_metricas(0.97, 0.95), _metricas(0.95, 0.95))["aprovado"]
+    assert decidir(_metricas(0.90, 0.85), _metricas(0.88, 0.85))["aprovado"]
 
 
 def test_gate_reprova_recall_abaixo_do_limiar():
-    assert not decidir(_metricas(0.85, 0.99), _metricas(0.80, 0.99))["aprovado"]
+    assert not decidir(_metricas(0.80, 0.99), _metricas(0.75, 0.99))["aprovado"]
 
 
 def test_gate_reprova_precisao_abaixo_do_limiar():
     # recall perfeito não compensa uma precisão ruim
-    assert not decidir(_metricas(1.0, 0.70), _metricas(0.95, 0.95))["aprovado"]
+    assert not decidir(_metricas(1.0, 0.70), _metricas(0.90, 0.85))["aprovado"]
 
 
 def test_gate_reprova_candidato_pior_que_o_campeao():
-    assert not decidir(_metricas(0.92, 0.95), _metricas(0.97, 0.95))["aprovado"]
+    assert not decidir(_metricas(0.87, 0.90), _metricas(0.90, 0.90))["aprovado"]
+
+
+def test_gate_aceita_exatamente_no_limiar():
+    """Novo: o contrato é ">=": 0,85 de recall e 0,80 de precisão ainda passam."""
+    limiar = _metricas(config.RECALL_MINIMO, config.PRECISAO_MINIMA)
+    assert decidir(limiar, limiar)["aprovado"]

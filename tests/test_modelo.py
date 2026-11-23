@@ -18,36 +18,38 @@ def test_campeao_versionado_foi_certificado_pelo_portao():
     """O metrics.json do campeão registra o que o portão mediu ao aprová-lo e cumpre o contrato."""
     with open(config.METRICAS_CAMPEAO, encoding="utf-8") as arquivo:
         declaradas = json.load(arquivo)
-    assert declaradas["recall_maligno"] >= config.RECALL_MINIMO, declaradas
-    assert declaradas["precisao_maligna"] >= config.PRECISAO_MINIMA, declaradas
+    assert declaradas["recall_pulsar"] >= config.RECALL_MINIMO, declaradas
+    assert declaradas["precisao_pulsar"] >= config.PRECISAO_MINIMA, declaradas
 
 
 def test_campeao_versionado_nao_colapsou_na_base_de_referencia(campeao, base_holdout):
     """Sanidade: o artefato carrega, prevê e não perdeu o básico no holdout fixo.
 
-    O contrato de 0,90 é medido pelo portão, no conjunto de avaliação da época da promoção.
+    O contrato (recall 0,85 e precisão 0,80) é medido pelo portão, no conjunto de avaliação
+    da época da promoção.
     Depois que o modelo se adapta a dados novos, o holdout antigo pode cair um pouco.
     Por isso o piso aqui é menor.
     """
     metricas = avaliar(campeao, base_holdout)
-    assert metricas["recall_maligno"] >= config.PISO_SANIDADE, metricas
-    assert metricas["precisao_maligna"] >= config.PISO_SANIDADE, metricas
+    assert metricas["recall_pulsar"] >= config.PISO_SANIDADE, metricas
+    assert metricas["precisao_pulsar"] >= config.PISO_SANIDADE, metricas
 
 
 def test_treino_com_o_codigo_e_params_atuais_cumpre_o_contrato(modelo_atual, base_holdout):
     """Se alguém mexer no código ou no params.yaml, o CI treina de novo e confere os limiares."""
     metricas = avaliar(modelo_atual, base_holdout)
-    assert metricas["recall_maligno"] >= config.RECALL_MINIMO, metricas
-    assert metricas["precisao_maligna"] >= config.PRECISAO_MINIMA, metricas
+    assert metricas["recall_pulsar"] >= config.RECALL_MINIMO, metricas
+    assert metricas["precisao_pulsar"] >= config.PRECISAO_MINIMA, metricas
 
 
 def test_modelo_supera_o_baseline_ingenuo(modelo_atual, base_treino, base_holdout):
     X_tr, y_tr = separar_xy(base_treino)
     X_te, y_te = separar_xy(base_holdout)
     baseline = DummyClassifier(strategy="most_frequent").fit(X_tr, y_tr)
-    nota_baseline = calcular_metricas(y_te, baseline.predict(X_te))["acuracia"]
-    nota_modelo = calcular_metricas(y_te, modelo_atual.predict(X_te))["acuracia"]
-    assert nota_modelo > nota_baseline + 0.1
+    # acurácia não serve aqui: o baseline "sempre ruído" já acerta 91%. Comparamos o recall.
+    nota_baseline = calcular_metricas(y_te, baseline.predict(X_te))["recall_pulsar"]
+    nota_modelo = calcular_metricas(y_te, modelo_atual.predict(X_te))["recall_pulsar"]
+    assert nota_modelo > nota_baseline + 0.5
 
 
 def test_treino_e_deterministico(base_treino, params, xy_holdout):
@@ -81,13 +83,32 @@ def test_invariancia_a_ruido_minimo(modelo_atual, xy_holdout):
     assert mudou <= 0.02
 
 
-def test_direcional_tumor_maior_nao_reduz_a_chance_de_maligno(modelo_atual, xy_holdout):
-    """Teste direcional: tumor maior não pode reduzir a probabilidade média de câncer."""
+def test_direcional_curtose_maior_nao_reduz_a_chance_de_pulsar(modelo_atual, xy_holdout):
+    """Teste direcional: pulso mais pontudo (curtose do perfil maior) não pode baixar a
+    probabilidade média de pulsar. É a assinatura física de um pulsar."""
     X_te, _ = xy_holdout
-    coluna = list(modelo_atual.classes_).index(config.CLASSE_MALIGNA)
-    maior = X_te.copy()
-    for c in config.COLUNAS_TAMANHO:
-        maior[c] = maior[c] * 1.10
+    coluna = list(modelo_atual.classes_).index(config.CLASSE_POSITIVA)
+    pontudo = X_te.copy()
+    pontudo[config.COLUNA_DIRECIONAL] = pontudo[config.COLUNA_DIRECIONAL] + 0.5
     antes = modelo_atual.predict_proba(X_te)[:, coluna].mean()
-    depois = modelo_atual.predict_proba(maior)[:, coluna].mean()
+    depois = modelo_atual.predict_proba(pontudo)[:, coluna].mean()
     assert depois >= antes
+
+
+def test_modelo_nao_depende_da_ordem_das_linhas(modelo_atual, base_treino, params, xy_holdout):
+    """Novo: embaralhar as linhas do treino não pode mudar o modelo (sem dependência de ordem)."""
+    X_te, _ = xy_holdout
+    embaralhado = base_treino.sample(frac=1.0, random_state=123).reset_index(drop=True)
+    outro = treinar(embaralhado, params)
+    concordancia = (modelo_atual.predict(X_te) == outro.predict(X_te)).mean()
+    assert concordancia >= 0.995
+
+
+def test_modelo_acha_mais_pulsares_que_o_baseline_aleatorio(modelo_atual, xy_holdout):
+    """Novo: o modelo precisa ter recall muito acima de um sorteio com a taxa de 9%."""
+    X_te, y_te = xy_holdout
+    rng = np.random.default_rng(0)
+    sorteio = (rng.random(len(y_te)) < 0.09).astype(int)
+    recall_sorteio = calcular_metricas(y_te, sorteio)["recall_pulsar"]
+    recall_modelo = calcular_metricas(y_te, modelo_atual.predict(X_te))["recall_pulsar"]
+    assert recall_modelo > recall_sorteio + 0.5
