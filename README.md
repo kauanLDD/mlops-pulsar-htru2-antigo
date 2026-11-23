@@ -1,11 +1,17 @@
-# Projeto de demonstração: CI/CD/CT para ML
+# Triagem de candidatos a pulsar: CI/CD/CT para ML
 
-Projeto pequeno, mas completo, que mostra como um modelo de machine learning é testado, retreinado e entregue de forma
-automática. Usa ferramentas reais: **GitHub Actions**, **pytest**, **ruff**, **DVC**, **FastAPI**, **Docker** e
+Adaptação do projeto da disciplina (classificação de tumores) para outro problema: separar **pulsares reais** de
+ruído e interferência de rádio nos candidatos gerados por um radiotelescópio. O modelo é testado, retreinado e
+entregue de forma automática. Usa ferramentas reais: **GitHub Actions**, **pytest**, **ruff**, **DVC**, **FastAPI**, **Docker** e
 **GitHub Container Registry**.
 
-O modelo é uma regressão logística que classifica tumores de mama (dataset Breast Cancer do scikit-learn).
-A classe de interesse é a **maligna** (rótulo `0`), então medimos **recall** e **precisão** dela.
+O modelo é uma regressão logística treinada no **HTRU2** (UCI Machine Learning Repository, licença CC BY 4.0,
+17.898 candidatos, 8 atributos numéricos, 9,2% de pulsares). Os atributos são média, desvio, curtose e assimetria do
+perfil de pulso integrado (`perfil_*`) e da curva DM-SNR (`dmsnr_*`). A classe de interesse é **pulsar** (rótulo `1`),
+então medimos **recall** e **precisão** dela. A acurácia não serve: chutar "ruído" sempre já dá 91%.
+
+Quem usaria: a equipe que faz a triagem dos candidatos do levantamento. O modelo ordena a fila, e o astrônomo só olha
+os que o modelo marcou como pulsar. O relatório da adaptação está em [ADAPTACAO.md](ADAPTACAO.md).
 
 ## O que cada letra faz neste projeto
 
@@ -22,7 +28,8 @@ projeto_ci_cd_ct/
   .github/workflows/     ci.yml, ct.yml, cd.yml
   src/mlops_demo/        config, data, features, evaluate, train, gate, monitor, api
   tests/                 test_codigo, test_dados, test_modelo, test_api
-  data/raw/              base_treino.csv, base_holdout.csv e lotes/ (lotes novos chegam aqui)
+  data/fonte/            htru2.csv (dataset completo, origem da base e dos lotes)
+  data/raw/              base_treino.csv (3000), base_holdout.csv (1000) e lotes/ (lotes novos chegam aqui)
   models/champion/       o modelo em produção (versionado no Git)
   params.yaml            hiperparâmetros (mudou aqui? o CI treina de novo e confere os limiares)
   dvc.yaml               pipeline: preparar e treinar
@@ -34,8 +41,9 @@ projeto_ci_cd_ct/
 
 Definido em `src/mlops_demo/config.py`:
 
-- recall da classe maligna **>= 0,90**
-- precisão da classe maligna **>= 0,90** (sem ela, um modelo que chuta tudo como maligno teria recall 1,0)
+- recall da classe pulsar **>= 0,85** (perder um pulsar é perder uma descoberta)
+- precisão da classe pulsar **>= 0,80** (sem ela, um modelo que chuta tudo como pulsar teria recall 1,0 e a equipe
+  ficaria afogada em candidatos falsos)
 - o candidato não pode ter recall menor que o do campeão, medido **no mesmo conjunto**
 
 ---
@@ -167,11 +175,11 @@ git branch -D cenario-N
 
 | N | O que muda | O que você deve observar |
 |---|---|---|
-| 1 | remove a última coluna das entradas do modelo | CI vermelho em **Testes de código** |
-| 2 | nulos e áreas negativas na base de treino | CI vermelho em **Validar os dados brutos** (antes do treino) |
-| 3 | regularização muito forte (`C: 0.00005`) | CI vermelho em **Testes de modelo**: recall abaixo de 0,90 |
-| 4 | lote novo com drift (tamanhos 25% menores) | CI verde. Veja o CT na seção seguinte |
-| 5 | `class_weight` extremo na classe maligna | CI vermelho: recall 1,0, mas precisão abaixo de 0,90 |
+| 1 | some a coluna `dmsnr_assimetria` das entradas do modelo | CI vermelho em **Testes de código** |
+| 2 | nulos em `perfil_media` e desvio zero em `perfil_desvio` | CI vermelho em **Validar os dados brutos** (antes do treino) |
+| 3 | regularização muito forte (`C: 0.00005`) | CI vermelho em **Testes de modelo**: recall ~0,31, abaixo de 0,85 |
+| 4 | lote novo com receptor recalibrado (média e desvio x0,75) | CI verde. Veja o CT na seção seguinte |
+| 5 | peso 50 na classe pulsar | CI vermelho e portão do CT reprovado: recall ~0,98, precisão ~0,35 |
 
 Para listar os cenários: `python demo/cenarios.py listar`.
 
@@ -190,7 +198,7 @@ O lote novo mostra que os dados mudaram. Aqui o CI fica verde, porque os dados s
 ### Cenário 4, modo automático: do lote novo à imagem publicada, sem ninguém
 
 No modo anterior, uma pessoa aprova o PR e outra cria a tag. Quando o portão de qualidade já é a regra de negócio
-("só entra modelo com recall e precisão de pelo menos 0,90 e que não piore o campeão"), dá para automatizar tudo. O CT
+("só entra modelo com recall de pelo menos 0,85, precisão de pelo menos 0,80 e que não piore o campeão"), dá para automatizar tudo. O CT
 passa a publicar o campeão na `main`, criar a tag da nova versão e disparar o CD.
 
 **Antes de começar (uma vez):**
@@ -259,7 +267,7 @@ python demo/smoke_test.py http://localhost:8000
 | `python -m mlops_demo.gate` | compara candidato e campeão. Sai com código 1 se reprovar |
 | `python -m mlops_demo.gate --promover` | copia o candidato para `models/champion/` |
 | `python demo/cenarios.py listar` | lista os cenários de prática |
-| `python demo/gerar_lote.py lote_02 --drift 0.75` | gera um lote novo de exames |
+| `python demo/gerar_lote.py lote_02 --drift 0.75` | gera um lote novo de candidatos |
 
 ## Se algo der errado
 
@@ -277,7 +285,7 @@ python demo/smoke_test.py http://localhost:8000
 
 ## Observações
 
-- Os dados são pequenos e ficam no Git. Em um projeto real, use `dvc add` com um *remote* (S3, GCS, Azure ou outro).
+- Os dados (1,6 MB) ficam no Git. Em um projeto real, use `dvc add` com um *remote* (S3, GCS, Azure ou outro).
 - O modelo é simples de propósito, para o treino levar poucos segundos.
 - O `GITHUB_TOKEN` padrão é suficiente aqui. Em produção, o PR de promoção costuma usar um *GitHub App* ou um token
   dedicado, para o CI rodar sozinho nele.
