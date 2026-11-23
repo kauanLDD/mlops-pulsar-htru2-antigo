@@ -8,4 +8,4 @@ modelo:
   # Com peso 3 o recall ficava em 0,86, colado no limiar de 0,85.
   class_weight:
     0: 1
-    1: 5
+    1: 50
