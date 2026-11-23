@@ -18,11 +18,11 @@ sys.path.insert(0, str(RAIZ / "src"))
 from mlops_demo.data import gerar_lote  # noqa: E402
 
 DESCRICAO = {
-    1: "Bug no pré-processamento: remove a última coluna. Esperado: CI falha em test_codigo.",
-    2: "Dados corrompidos na base de treino. Esperado: CI falha em test_dados.",
-    3: "Hiperparâmetro ruim (C muito pequeno). Esperado: CI falha em test_modelo (recall).",
-    4: "Lote novo com drift. Esperado: CI verde e CT dispara, retreina e o portão aprova.",
-    5: "class_weight extremo. Esperado: recall 1,0, precisão baixa, CI e portão do CT reprovam.",
+    1: "Bug no pré-processamento: some a coluna dmsnr_assimetria. Esperado: CI falha em código.",
+    2: "Base de treino corrompida (nulos e desvio zero). Esperado: CI falha na validação de dados.",
+    3: "Regularização forte demais (C: 0.00005). Esperado: CI falha em modelo (recall ~0,31).",
+    4: "Receptor recalibrado (ganho x0,75). Esperado: CI verde, CT retreina e aprova.",
+    5: "Peso 50 na classe pulsar. Esperado: recall ~0,98 e precisão ~0,35, CI e portão reprovam.",
 }
 
 
@@ -45,10 +45,10 @@ def cenario_1() -> None:
 def cenario_2() -> None:
     caminho = RAIZ / "data" / "raw" / "base_treino.csv"
     df = pd.read_csv(caminho)
-    df.loc[0:4, "mean radius"] = None
-    df.loc[5:7, "mean area"] = -10.0
+    df.loc[0:4, "perfil_media"] = None
+    df.loc[5:7, "perfil_desvio"] = 0.0
     df.to_csv(caminho, index=False)
-    print("alterado: data/raw/base_treino.csv (5 nulos em mean radius, 3 áreas negativas)")
+    print("alterado: data/raw/base_treino.csv (5 nulos em perfil_media, 3 desvios zerados)")
 
 
 def cenario_3() -> None:
@@ -56,12 +56,12 @@ def cenario_3() -> None:
 
 
 def cenario_4() -> None:
-    caminho = gerar_lote("lote_01", n=120, fator_drift=0.75, semente=1)
-    print("criado:", Path(caminho).relative_to(RAIZ), "(atributos de tamanho 25% menores)")
+    caminho = gerar_lote("lote_01", n=600, fator_drift=0.75, semente=1)
+    print("criado:", Path(caminho).relative_to(RAIZ), "(média e desvio do sinal 25% menores)")
 
 
 def cenario_5() -> None:
-    _substituir(RAIZ / "params.yaml", "class_weight: balanced", "class_weight: {0: 50, 1: 1}")
+    _substituir(RAIZ / "params.yaml", "    1: 5", "    1: 50")
 
 
 CENARIOS = {1: cenario_1, 2: cenario_2, 3: cenario_3, 4: cenario_4, 5: cenario_5}
